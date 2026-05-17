@@ -1,16 +1,15 @@
 // api/whatsapp.js — Bot WhatsApp Fiados
-// Flujo: recibe nombre → busca cliente → genera recibo → sube a Supabase Storage → envía imagen por Twilio
+// Usa Canvas para generar la imagen sin Puppeteer/Chrome
 
 const twilio = require('twilio');
+const { createCanvas } = require('canvas');
 
-// ── Configuración (variables de entorno en Vercel) ──
 const ACCOUNT_SID = process.env.TWILIO_SID;
 const AUTH_TOKEN  = process.env.TWILIO_TOKEN;
 const FROM_NUMBER = process.env.TWILIO_FROM;
 const SB_URL      = process.env.SB_URL;
 const SB_KEY      = process.env.SB_KEY;
 
-// ── Helper Supabase REST ──
 async function sbGet(path) {
   const res = await fetch(`${SB_URL}/rest/v1/${path}`, {
     headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` }
@@ -19,7 +18,6 @@ async function sbGet(path) {
   return res.json();
 }
 
-// ── Subir imagen a Supabase Storage ──
 async function subirImagen(buffer, fileName) {
   const res = await fetch(`${SB_URL}/storage/v1/object/recibos/${fileName}`, {
     method: 'POST',
@@ -35,87 +33,116 @@ async function subirImagen(buffer, fileName) {
   return `${SB_URL}/storage/v1/object/public/recibos/${fileName}`;
 }
 
-// ── Normalizar texto ──
-const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-const fmtNum = n => parseFloat(n || 0).toFixed(2);
+const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+const fmtNum = n => parseFloat(n||0).toFixed(2);
 const fechaDisplay = iso => iso.split('-').reverse().join('/');
 
-// ── Generar HTML del recibo ──
-function generarHTML(cli, cuenta, visitas, items, pagos) {
+function generarImagen(cli, cuenta, visitas, items) {
   const porFecha = {};
-  visitas.forEach(v => { (porFecha[v.fecha] = porFecha[v.fecha] || []).push(v); });
+  visitas.forEach(v => { (porFecha[v.fecha] = porFecha[v.fecha]||[]).push(v); });
 
-  const diasHtml = Object.entries(porFecha)
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([fecha, vsDelDia]) => {
-      const totalDia = vsDelDia.reduce((s, v) => s + parseFloat(v.total_visita || 0), 0);
-      const nVisitas = vsDelDia.length;
-      const visitasHtml = vsDelDia.map((v, idx) => {
-        const its = items.filter(it => it.visita_id === v.id);
-        const prodHtml = its.map(it =>
-          `<div class="prod-item"><span class="prod-name">${it.producto}</span><span class="prod-price">S/ ${fmtNum(it.precio)}</span></div>`
-        ).join('');
-        const labelHtml = nVisitas > 1 ? `<div class="visita-label">VISITA ${idx + 1}</div>` : '';
-        const subHtml   = nVisitas > 1 ? `<div class="subtotal">subtotal <span>S/ ${fmtNum(v.total_visita)}</span></div>` : '';
-        return `<div class="visita">${labelHtml}<div class="productos">${prodHtml}</div>${subHtml}</div>`;
-      }).join('');
-      const nLabel = nVisitas > 1 ? `<span class="nvisitas">${nVisitas} visitas</span>` : '';
-      return `<div class="dia">
-        <div class="dia-header">
-          <span><span class="dia-fecha">${fechaDisplay(fecha)}</span>${nLabel}</span>
-          <span class="dia-total">S/ ${fmtNum(totalDia)}</span>
-        </div>${visitasHtml}</div>`;
-    }).join('');
+  const lineas = [];
+  lineas.push({ tipo: 'titulo', texto: 'ESTADO DE CUENTA — FIADO' });
+  lineas.push({ tipo: 'sep' });
+  lineas.push({ tipo: 'cliente', texto: `Cliente: ${cli.nombre}` });
+  lineas.push({ tipo: 'espacio' });
 
-  const abonosHtml = pagos.length ? `
-    <div class="abonos-section">
-      <div class="abonos-title">Abonos realizados</div>
-      ${pagos.map(p => `<div class="abono-row"><span>${fechaDisplay(p.fecha)}${p.nota ? ' · ' + p.nota : ''}</span><span>− S/ ${fmtNum(p.monto)}</span></div>`).join('')}
-    </div>` : '';
+  Object.entries(porFecha).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([fecha, vsDelDia]) => {
+    const totalDia = vsDelDia.reduce((s,v)=>s+parseFloat(v.total_visita||0),0);
+    const nVisitas = vsDelDia.length;
+    lineas.push({ tipo: 'fecha', izq: fechaDisplay(fecha), der: `S/ ${fmtNum(totalDia)}` });
+    vsDelDia.forEach((v, idx) => {
+      const its = items.filter(it => it.visita_id === v.id);
+      if (nVisitas > 1) lineas.push({ tipo: 'visita_label', texto: `Visita ${idx+1}` });
+      for (let i = 0; i < its.length; i += 2) {
+        lineas.push({ tipo: 'producto2col',
+          col1: `  ${its[i].producto}`, pr1: `S/ ${fmtNum(its[i].precio)}`,
+          col2: its[i+1] ? its[i+1].producto : '',
+          pr2:  its[i+1] ? `S/ ${fmtNum(its[i+1].precio)}` : ''
+        });
+      }
+      if (nVisitas > 1) {
+        const sub = its.reduce((s,it)=>s+parseFloat(it.precio||0),0);
+        lineas.push({ tipo: 'subtotal', texto: `S/ ${fmtNum(sub)}` });
+      }
+    });
+    lineas.push({ tipo: 'espacio' });
+  });
 
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:Georgia,serif;color:#1a1a1a;background:#fff;padding:32px 28px;width:480px}
-    .titulo{font-size:20px;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}
-    .hr{border:none;border-top:2px dashed #bbb;margin:10px 0 14px}
-    .cliente{font-size:14px;margin-bottom:14px}
-    .cliente strong{font-weight:700}
-    .dia{margin-bottom:2px}
-    .dia-header{display:flex;justify-content:space-between;align-items:baseline;padding:7px 0 5px;border-bottom:1.5px solid #333}
-    .dia-fecha{font-size:13px;font-weight:700;font-family:-apple-system,sans-serif}
-    .nvisitas{font-size:10px;color:#999;font-style:italic;margin-left:5px}
-    .dia-total{font-size:13px;font-weight:700;font-family:-apple-system,sans-serif}
-    .visita{padding:5px 0 5px 10px;border-bottom:0.5px solid #eee}
-    .visita:last-child{border-bottom:0.5px solid #ddd}
-    .visita-label{font-size:9px;color:#aaa;text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px}
-    .productos{display:grid;grid-template-columns:1fr 1fr;gap:1px 8px}
-    .prod-item{display:flex;justify-content:space-between;padding:2px 0;border-bottom:0.5px solid #f5f5f5}
-    .prod-item:last-child{border-bottom:none}
-    .prod-name{font-size:11px;color:#333}
-    .prod-price{font-size:11px;color:#666;font-weight:600;font-family:-apple-system,sans-serif}
-    .subtotal{display:flex;justify-content:flex-end;font-size:10px;color:#999;padding:3px 0 1px;border-top:0.5px dashed #ddd;margin-top:3px}
-    .subtotal span{margin-left:4px;font-weight:700;color:#666;font-family:-apple-system,sans-serif}
-    .abonos-section{margin-top:10px;border-top:1px dashed #ccc;padding-top:8px}
-    .abonos-title{font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
-    .abono-row{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;color:#166534;font-family:-apple-system,sans-serif}
-    .total-wrap{background:#f0f0f0;border-radius:7px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-top:14px}
-    .total-label{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
-    .total-monto{font-size:22px;font-weight:700;font-family:-apple-system,sans-serif}
-    .gracias{text-align:center;font-size:12px;color:#999;margin-top:12px;font-style:italic}
-  </style></head><body>
-    <div class="titulo">Estado de Cuenta — Fiado</div>
-    <hr class="hr">
-    <div class="cliente"><strong>Cliente:</strong> ${cli.nombre}.</div>
-    ${diasHtml}${abonosHtml}
-    <div class="total-wrap">
-      <span class="total-label">Saldo a pagar</span>
-      <span class="total-monto">S/ ${fmtNum(cuenta.saldo)}</span>
-    </div>
-    <div class="gracias">Gracias por su preferencia</div>
-  </body></html>`;
+  lineas.push({ tipo: 'sep2' });
+  lineas.push({ tipo: 'total', izq: 'SALDO A PAGAR', der: `S/ ${fmtNum(cuenta.saldo)}` });
+  lineas.push({ tipo: 'sep2' });
+  lineas.push({ tipo: 'espacio' });
+  lineas.push({ tipo: 'gracias', texto: 'Gracias por su preferencia' });
+  lineas.push({ tipo: 'espacio' });
+
+  const W = 500, PADDING = 28, LINE_H = 22;
+  const H = lineas.length * LINE_H + PADDING * 2 + 40;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  let y = PADDING + 10;
+
+  lineas.forEach(l => {
+    ctx.fillStyle = '#1a1a1a';
+    switch(l.tipo) {
+      case 'titulo':
+        ctx.font = 'bold 16px serif'; ctx.fillText(l.texto, PADDING, y); y += LINE_H + 4; break;
+      case 'sep':
+        ctx.setLineDash([4,4]); ctx.strokeStyle = '#bbbbbb'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(PADDING, y); ctx.lineTo(W-PADDING, y); ctx.stroke();
+        y += LINE_H; break;
+      case 'sep2':
+        ctx.setLineDash([]); ctx.strokeStyle = '#333333'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(PADDING, y); ctx.lineTo(W-PADDING, y); ctx.stroke();
+        y += 8; break;
+      case 'cliente':
+        ctx.font = 'bold 13px serif'; ctx.fillText(l.texto, PADDING, y); y += LINE_H; break;
+      case 'espacio':
+        y += LINE_H * 0.5; break;
+      case 'fecha':
+        ctx.font = 'bold 13px sans-serif'; ctx.fillText(l.izq, PADDING, y);
+        ctx.textAlign = 'right'; ctx.fillText(l.der, W-PADDING, y); ctx.textAlign = 'left';
+        ctx.setLineDash([]); ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(PADDING, y+4); ctx.lineTo(W-PADDING, y+4); ctx.stroke();
+        y += LINE_H + 4; break;
+      case 'visita_label':
+        ctx.font = '10px sans-serif'; ctx.fillStyle = '#aaaaaa';
+        ctx.fillText(l.texto.toUpperCase(), PADDING+8, y); ctx.fillStyle = '#1a1a1a';
+        y += LINE_H * 0.8; break;
+      case 'producto2col': {
+        const midX = W / 2;
+        ctx.font = '11px serif'; ctx.fillText(l.col1, PADDING, y);
+        ctx.font = '11px sans-serif'; ctx.textAlign = 'right'; ctx.fillText(l.pr1, midX-10, y);
+        ctx.textAlign = 'left';
+        if (l.col2) {
+          ctx.font = '11px serif'; ctx.fillText(l.col2, midX+10, y);
+          ctx.font = '11px sans-serif'; ctx.textAlign = 'right'; ctx.fillText(l.pr2, W-PADDING, y);
+          ctx.textAlign = 'left';
+        }
+        y += LINE_H; break;
+      }
+      case 'subtotal':
+        ctx.font = '10px sans-serif'; ctx.fillStyle = '#999999';
+        ctx.textAlign = 'right'; ctx.fillText('subtotal ' + l.texto, W-PADDING, y);
+        ctx.textAlign = 'left'; ctx.fillStyle = '#1a1a1a'; y += LINE_H * 0.9; break;
+      case 'total':
+        ctx.font = 'bold 14px sans-serif'; ctx.fillText(l.izq, PADDING, y);
+        ctx.textAlign = 'right'; ctx.font = 'bold 20px sans-serif'; ctx.fillText(l.der, W-PADDING, y);
+        ctx.textAlign = 'left'; y += LINE_H + 6; break;
+      case 'gracias':
+        ctx.font = 'italic 11px serif'; ctx.fillStyle = '#999999';
+        ctx.textAlign = 'center'; ctx.fillText(l.texto, W/2, y);
+        ctx.textAlign = 'left'; ctx.fillStyle = '#1a1a1a'; y += LINE_H; break;
+    }
+  });
+
+  return canvas.toBuffer('image/png');
 }
 
-// ── Handler principal ──
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).end();
 
@@ -134,15 +161,13 @@ module.exports = async (req, res) => {
   };
 
   try {
-    const [clientes, cuentas, visitas, items, pagos] = await Promise.all([
+    const [clientes, cuentas, visitas, items] = await Promise.all([
       sbGet('clientes?order=nombre'),
       sbGet('cuentas?order=cliente_id,numero'),
       sbGet('visitas?order=fecha,created_at'),
-      sbGet('items_visita?order=id'),
-      sbGet('pagos?order=fecha')
+      sbGet('items_visita?order=id')
     ]);
 
-    // Buscar cliente ignorando tildes y mayúsculas
     const cli = clientes.find(c =>
       norm(c.nombre).includes(msg) || msg.includes(norm(c.nombre))
     );
@@ -163,29 +188,21 @@ module.exports = async (req, res) => {
 
     const vsCuenta  = visitas.filter(v => v.cuenta_id === cuenta.id);
     const itsCuenta = items.filter(it => vsCuenta.some(v => v.id === it.visita_id));
-    const pgCuenta  = pagos.filter(p => p.cuenta_id === cuenta.id);
 
-    // Generar imagen con Puppeteer via node-html-to-image
-    const nodeHtmlToImage = require('node-html-to-image');
-    const html   = generarHTML(cli, cuenta, vsCuenta, itsCuenta, pgCuenta);
-    const imgBuf = await nodeHtmlToImage({
-      html,
-      type: 'png',
-      puppeteerArgs: { args: ['--no-sandbox', '--disable-setuid-sandbox'] }
-    });
-
-    // Subir a Supabase Storage y obtener URL pública
+    const imgBuf    = generarImagen(cli, cuenta, vsCuenta, itsCuenta);
     const fileName  = `recibo-${cli.id}-${Date.now()}.png`;
     const publicUrl = await subirImagen(imgBuf, fileName);
 
-    // Enviar imagen por WhatsApp
-    await enviar(`Estado de cuenta de *${cli.nombre}*\nSaldo pendiente: *S/ ${fmtNum(cuenta.saldo)}*`, publicUrl);
+    await enviar(
+      `Estado de cuenta de *${cli.nombre}*\nSaldo pendiente: *S/ ${fmtNum(cuenta.saldo)}*`,
+      publicUrl
+    );
 
     return res.status(200).end();
 
   } catch (e) {
     console.error('Error bot:', e.message);
-    await enviar('Ocurrió un error. Intenta de nuevo en un momento.').catch(() => {});
+    await enviar('Ocurrió un error. Intenta de nuevo.').catch(()=>{});
     return res.status(200).end();
   }
 };
