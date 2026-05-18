@@ -11,7 +11,7 @@ function fmtFecha(fecha) {
 }
 
 
-async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
+async function generarImagenRecibo(cli, cuenta, visitas, items) {
   const vs = visitas
     .filter(v => v.cuenta_id === cuenta.id)
     .sort((a, b) => a.fecha.localeCompare(b.fecha));
@@ -28,94 +28,28 @@ async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
 
   const saldo = parseFloat(cuenta.saldo || 0);
 
-
   const renderProductos = (its) => {
     const filas = [];
 
     for (let i = 0; i < its.length; i += 2) {
       const izq = its[i];
-      const der = its[i + 1] || null;
+      const der = its[i + 1];
 
       filas.push({
         type: "div",
         props: {
           style: {
             display: "flex",
-            flexDirection: "row",
-            width: "100%",
-            marginBottom: "4px"
+            justifyContent: "space-between",
+            marginBottom: "5px"
           },
-          children: [
-            {
-              type: "div",
-              props: {
-                style: {
-                  display: "flex",
-                  flexDirection: "row",
-                  justifyContent: "space-between",
-                  width: "50%",
-                  paddingRight: "10px"
-                },
-                children: [
-                  {
-                    type: "span",
-                    props: {
-                      style: {
-                        display: "flex",
-                        fontSize: "14px"
-                      },
-                      children: izq.producto
-                    }
-                  },
-                  {
-                    type: "span",
-                    props: {
-                      style: {
-                        display: "flex",
-                        fontSize: "14px"
-                      },
-                      children: `S/ ${fmtNum(izq.precio)}`
-                    }
-                  }
-                ]
-              }
-            },
 
-            der && {
-              type: "div",
-              props: {
-                style: {
-                  display: "flex",
-                  flexDirection: "row",
-                  justifyContent: "space-between",
-                  width: "50%",
-                  paddingLeft: "10px"
-                },
-                children: [
-                  {
-                    type: "span",
-                    props: {
-                      style: {
-                        display: "flex",
-                        fontSize: "14px"
-                      },
-                      children: der.producto
-                    }
-                  },
-                  {
-                    type: "span",
-                    props: {
-                      style: {
-                        display: "flex",
-                        fontSize: "14px"
-                      },
-                      children: `S/ ${fmtNum(der.precio)}`
-                    }
-                  }
-                ]
-              }
-            }
-          ].filter(Boolean)
+          children: [
+            `${izq.producto} - S/ ${fmtNum(izq.precio)}`,
+            der
+              ? `${der.producto} - S/ ${fmtNum(der.precio)}`
+              : ""
+          ]
         }
       });
     }
@@ -127,6 +61,7 @@ async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
   return new ImageResponse(
     {
       type: "div",
+
       props: {
         style: {
           display: "flex",
@@ -141,11 +76,11 @@ async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
             type: "div",
             props: {
               style: {
-                display: "flex",
                 fontSize: "28px",
-                fontWeight: "800",
+                fontWeight: "bold",
                 marginBottom: "20px"
               },
+
               children: "ESTADO DE CUENTA — FIADO"
             }
           },
@@ -154,141 +89,84 @@ async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
             type: "div",
             props: {
               style: {
-                display: "flex",
-                flexDirection: "column",
                 marginBottom: "20px"
               },
 
-              children: [
-                {
-                  type: "div",
-                  props: {
-                    style: {
-                      display: "flex",
-                      fontSize: "18px"
-                    },
-                    children: `Cliente: ${cli.nombre}`
-                  }
-                },
-
-                {
-                  type: "div",
-                  props: {
-                    style: {
-                      display: "flex",
-                      fontSize: "14px"
-                    },
-                    children: `Cuenta #${cuenta.numero}`
-                  }
-                }
-              ]
+              children: `Cliente: ${cli.nombre}`
             }
           },
 
+          ...Object.entries(porFecha).map(([fecha, visitasDia]) => {
 
-          ...Object.entries(porFecha).map(([fecha, vsDelDia]) => {
-            const totalDia = vsDelDia.reduce(
-              (s, v) => s + parseFloat(v.total_visita || 0),
+            const totalDia = visitasDia.reduce(
+              (sum, v) => sum + Number(v.total_visita),
               0
             );
 
-            const allItems = vsDelDia.flatMap(
-              v => items.filter(it => it.visita_id === v.id)
+            const productos = visitasDia.flatMap(
+              v => items.filter(
+                i => i.visita_id === v.id
+              )
             );
 
             return {
               type: "div",
+
               props: {
                 style: {
-                  display: "flex",
-                  flexDirection: "column",
                   marginBottom: "20px"
                 },
 
                 children: [
                   {
                     type: "div",
+
                     props: {
                       style: {
                         display: "flex",
                         justifyContent: "space-between",
+                        fontWeight: "bold",
                         marginBottom: "10px"
                       },
 
                       children: [
-                        {
-                          type: "span",
-                          props: {
-                            style: {
-                              display: "flex",
-                              fontWeight: "bold"
-                            },
-                            children: fmtFecha(fecha)
-                          }
-                        },
-
-                        {
-                          type: "span",
-                          props: {
-                            style: {
-                              display: "flex",
-                              fontWeight: "bold"
-                            },
-                            children: `S/ ${fmtNum(totalDia)}`
-                          }
-                        }
+                        fmtFecha(fecha),
+                        `S/ ${fmtNum(totalDia)}`
                       ]
                     }
                   },
 
-                  ...renderProductos(allItems)
+                  ...renderProductos(productos)
                 ]
               }
             };
           }),
 
-
           {
             type: "div",
+
             props: {
               style: {
                 display: "flex",
                 justifyContent: "space-between",
-                marginTop: "20px"
+                marginTop: "30px",
+                fontWeight: "bold",
+                fontSize: "24px"
               },
 
               children: [
-                {
-                  type: "span",
-                  props: {
-                    style: {
-                      display: "flex",
-                      fontWeight: "bold",
-                      fontSize: "18px"
-                    },
-                    children: "SALDO A PAGAR"
-                  }
-                },
-
-                {
-                  type: "span",
-                  props: {
-                    style: {
-                      display: "flex",
-                      fontWeight: "bold",
-                      fontSize: "30px"
-                    },
-                    children: `S/ ${fmtNum(saldo)}`
-                  }
-                }
+                "SALDO A PAGAR",
+                `S/ ${fmtNum(saldo)}`
               ]
             }
           }
         ]
       }
     },
+
     {
-      width: 700
+      width: 700,
+      height: 900
     }
   );
 }
@@ -298,17 +176,66 @@ async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
 export default async function handler(req, res) {
   try {
 
-    if (req.method !== "GET") {
-      return res.status(405).json({
-        error: "Método no permitido"
-      });
-    }
+    // 🔹 Datos de prueba
+    const cli = {
+      nombre: "Juan Pérez"
+    };
+
+    const cuenta = {
+      id: 1,
+      numero: 1,
+      saldo: 35
+    };
+
+    const visitas = [
+      {
+        id: 1,
+        cuenta_id: 1,
+        fecha: "2025-01-10",
+        total_visita: 15
+      },
+
+      {
+        id: 2,
+        cuenta_id: 1,
+        fecha: "2025-01-12",
+        total_visita: 20
+      }
+    ];
+
+    const items = [
+      {
+        visita_id: 1,
+        producto: "Arroz",
+        precio: 8
+      },
+
+      {
+        visita_id: 1,
+        producto: "Aceite",
+        precio: 7
+      },
+
+      {
+        visita_id: 2,
+        producto: "Azúcar",
+        precio: 10
+      },
+
+      {
+        visita_id: 2,
+        producto: "Leche",
+        precio: 10
+      }
+    ];
 
 
-    return res.status(200).json({
-      ok: true,
-      message: "Servidor funcionando en Vercel"
-    });
+    return generarImagenRecibo(
+      cli,
+      cuenta,
+      visitas,
+      items
+    );
 
   } catch (error) {
 
