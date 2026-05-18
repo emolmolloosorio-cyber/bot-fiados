@@ -1,8 +1,6 @@
 // api/whatsapp.js — Bot WhatsApp Fiados
 // Busca imagen pre-generada en Supabase Storage y la envía por WhatsApp
-
 const twilio = require('twilio');
-
 const ACCOUNT_SID = process.env.TWILIO_SID;
 const AUTH_TOKEN  = process.env.TWILIO_TOKEN;
 const FROM_NUMBER = process.env.TWILIO_FROM;
@@ -17,8 +15,8 @@ async function sbGet(path) {
   return res.json();
 }
 
-const norm    = s  => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
-const fmtNum  = n  => parseFloat(n||0).toFixed(2);
+const norm   = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+const fmtNum = n => parseFloat(n||0).toFixed(2);
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).end();
@@ -62,23 +60,24 @@ module.exports = async (req, res) => {
       return res.status(200).end();
     }
 
-    // URL pública de la imagen pre-generada desde la app
+    // FIX 1: bucket se llama "Recibos" con R mayúscula
     const fileName  = `recibo-cliente-${cli.id}.png`;
-    const publicUrl = `${SB_URL}/storage/v1/object/public/recibos/${fileName}`;
+    const publicUrl = `${SB_URL}/storage/v1/object/public/Recibos/${fileName}`;
 
     // Verificar que la imagen existe
     const check = await fetch(publicUrl, { method: 'HEAD' });
     if (!check.ok) {
-      await enviar(`El recibo de *${cli.nombre}* aún no ha sido generado.\nAbre la app, busca al cliente y toca "🧾 Recibo" para generarlo. Luego vuelve a escribir aquí.`);
+      await enviar(
+        `El recibo de *${cli.nombre}* aún no ha sido generado.\n` +
+        `Abre la app, busca al cliente y toca "🧾 Recibo" para generarlo. Luego vuelve a escribir aquí.`
+      );
       return res.status(200).end();
     }
 
-    // Agregar timestamp para evitar cache de WhatsApp
-    const urlConTimestamp = `${publicUrl}?t=${Date.now()}`;
-
+    // FIX 2: sin ?t=timestamp — Twilio necesita URL limpia para descargar la imagen
     await enviar(
       `Estado de cuenta de *${cli.nombre}*\nSaldo pendiente: *S/ ${fmtNum(cuenta.saldo)}*`,
-      urlConTimestamp
+      publicUrl
     );
 
     return res.status(200).end();
