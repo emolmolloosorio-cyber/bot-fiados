@@ -1,5 +1,4 @@
 // api/whatsapp.js — Bot WhatsApp Fiados
-// Genera imagen del recibo automáticamente con @vercel/og si no existe en Storage
 const twilio = require('twilio');
 const { ImageResponse } = require('@vercel/og');
 
@@ -26,6 +25,33 @@ const norm     = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLower
 const fmtNum   = n => parseFloat(n || 0).toFixed(2);
 const fmtFecha = iso => iso.split('-').reverse().join('/');
 
+// Helper: nodo simple
+const el = (type, style, children) => ({
+  type,
+  props: {
+    style: { display: 'flex', flexDirection: 'column', ...style },
+    children
+  }
+});
+
+// Fila izquierda-derecha
+const row = (l, r, sL = {}, sR = {}) => ({
+  type: 'div',
+  props: {
+    style: { display: 'flex', flexDirection: 'row', justifyContent: 'space-between', width: '100%' },
+    children: [
+      { type: 'span', props: { style: sL, children: l } },
+      { type: 'span', props: { style: sR, children: r } }
+    ]
+  }
+});
+
+// Separador
+const sep = (style = {}) => ({
+  type: 'div',
+  props: { style: { width: '100%', height: '1px', ...style } }
+});
+
 async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
   const vs = visitas
     .filter(v => v.cuenta_id === cuenta.id)
@@ -40,78 +66,93 @@ async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
   const pg = pagos.filter(p => p.cuenta_id === cuenta.id);
   const saldo = parseFloat(cuenta.saldo || 0);
 
-  // Calcular altura dinámica
-  let numLineas = 8;
+  // Altura dinámica
+  let lineas = 10;
   Object.values(porFecha).forEach(vsDelDia => {
-    numLineas += 2;
+    lineas += 2;
     vsDelDia.forEach(v => {
       const its = items.filter(it => it.visita_id === v.id);
-      numLineas += Math.max(its.length, 1) + (vsDelDia.length > 1 ? 2 : 0);
+      lineas += Math.max(its.length, 1) + (vsDelDia.length > 1 ? 2 : 0);
     });
   });
-  if (pg.length) numLineas += 2 + pg.length;
-  const altura = Math.max(500, numLineas * 26 + 120);
+  if (pg.length) lineas += 2 + pg.length;
+  const altura = Math.max(500, lineas * 26 + 100);
 
-  const R = (type, style, children) => ({ type, props: { style, children } });
-  const Row = (l, r, styleL = {}, styleR = {}) => R('div', { display:'flex', justifyContent:'space-between', width:'100%' }, [
-    R('span', { ...styleL }, l),
-    R('span', { ...styleR }, r)
-  ]);
-
+  // Construir nodos de días
   const diasNodes = Object.entries(porFecha).map(([fecha, vsDelDia]) => {
     const totalDia = vsDelDia.reduce((s, v) => s + parseFloat(v.total_visita || 0), 0);
-    return R('div', { marginBottom: '10px' }, [
-      Row(fmtFecha(fecha), `S/ ${fmtNum(totalDia)}`,
-        { fontSize:'13px', fontWeight:'bold' },
-        { fontSize:'13px', fontWeight:'bold' }
+
+    const visitasNodes = vsDelDia.map((v, idx) => {
+      const its = items.filter(it => it.visita_id === v.id);
+      const labelNode = vsDelDia.length > 1
+        ? { type: 'span', props: { style: { fontSize: '10px', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '2px' }, children: `Visita ${idx + 1}` } }
+        : null;
+
+      const productosNodes = its.length > 0
+        ? its.map(it => row(it.producto, `S/ ${fmtNum(it.precio)}`,
+            { fontSize: '12px', color: '#333' },
+            { fontSize: '12px', fontWeight: '600' }
+          ))
+        : [{ type: 'span', props: { style: { fontSize: '12px', color: '#666' }, children: `Total: S/ ${fmtNum(v.total_visita)}` } }];
+
+      const subtotalNode = vsDelDia.length > 1
+        ? { type: 'span', props: { style: { fontSize: '11px', color: '#999', textAlign: 'right', marginTop: '2px' }, children: `Subtotal: S/ ${fmtNum(v.total_visita)}` } }
+        : null;
+
+      return el('div', { paddingLeft: '8px', marginBottom: '4px', gap: '1px' },
+        [labelNode, ...productosNodes, subtotalNode].filter(Boolean)
+      );
+    });
+
+    return el('div', { marginBottom: '10px', gap: '0px' }, [
+      row(fmtFecha(fecha), `S/ ${fmtNum(totalDia)}`,
+        { fontSize: '13px', fontWeight: 'bold' },
+        { fontSize: '13px', fontWeight: 'bold' }
       ),
-      R('div', { borderTop:'1.5px solid #333', marginBottom:'5px' }),
-      ...vsDelDia.map((v, idx) => {
-        const its = items.filter(it => it.visita_id === v.id);
-        return R('div', { paddingLeft:'8px', marginBottom:'4px' }, [
-          vsDelDia.length > 1 ? R('div', { fontSize:'10px', color:'#aaa', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'2px' }, `Visita ${idx+1}`) : null,
-          its.length > 0
-            ? R('div', { display:'flex', flexDirection:'column', gap:'1px' },
-                its.map(it => Row(it.producto, `S/ ${fmtNum(it.precio)}`,
-                  { fontSize:'12px', color:'#333' },
-                  { fontSize:'12px', fontWeight:'600', paddingLeft:'8px' }
-                ))
-              )
-            : R('div', { fontSize:'12px', color:'#666' }, `Total: S/ ${fmtNum(v.total_visita)}`),
-          vsDelDia.length > 1 ? R('div', { fontSize:'11px', color:'#999', textAlign:'right', marginTop:'2px' }, `Subtotal: S/ ${fmtNum(v.total_visita)}`) : null
-        ].filter(Boolean));
-      })
+      sep({ background: '#333', marginBottom: '5px' }),
+      ...visitasNodes
     ]);
   });
 
-  const abonosNode = pg.length > 0 ? R('div', { borderTop:'1px dashed #ccc', paddingTop:'8px', marginTop:'4px' }, [
-    R('div', { fontSize:'11px', color:'#999', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'5px' }, 'Abonos realizados'),
-    ...pg.map(p => Row(
-      fmtFecha(p.fecha) + (p.nota ? ` (${p.nota})` : ''),
-      `−S/ ${fmtNum(p.monto)}`,
-      { fontSize:'12px' },
-      { fontSize:'12px', color:'#166534', fontWeight:'600' }
-    ))
-  ]) : null;
+  // Nodo abonos
+  const abonosNode = pg.length > 0
+    ? el('div', { borderTop: '1px dashed #ccc', paddingTop: '8px', marginTop: '4px', gap: '3px' }, [
+        { type: 'span', props: { style: { fontSize: '11px', color: '#999', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '3px' }, children: 'Abonos realizados' } },
+        ...pg.map(p => row(
+          fmtFecha(p.fecha) + (p.nota ? ` (${p.nota})` : ''),
+          `−S/ ${fmtNum(p.monto)}`,
+          { fontSize: '12px' },
+          { fontSize: '12px', color: '#166534', fontWeight: '600' }
+        ))
+      ])
+    : null;
 
   const imageResponse = new ImageResponse(
-    R('div',
-      { width:'600px', minHeight:`${altura}px`, background:'#fff', fontFamily:'Georgia,serif', color:'#1a1a1a', padding:'32px 28px', display:'flex', flexDirection:'column' },
+    el('div',
+      { width: '600px', minHeight: `${altura}px`, background: '#fff', fontFamily: 'Georgia, serif', color: '#1a1a1a', padding: '32px 28px', gap: '0px' },
       [
-        R('div', { fontSize:'18px', fontWeight:'bold', letterSpacing:'1px', textTransform:'uppercase', marginBottom:'4px' }, 'ESTADO DE CUENTA — FIADO'),
-        R('div', { borderTop:'2px dashed #bbb', margin:'10px 0 14px' }),
-        R('div', { fontSize:'15px', marginBottom:'4px' }, [
-          R('span', { fontWeight:'bold' }, 'Cliente: '),
-          R('span', {}, cli.nombre)
+        // Título
+        { type: 'span', props: { style: { fontSize: '18px', fontWeight: 'bold', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '4px' }, children: 'ESTADO DE CUENTA — FIADO' } },
+        sep({ background: '#bbb', borderTop: '2px dashed #bbb', margin: '10px 0 14px' }),
+        // Cliente
+        el('div', { flexDirection: 'row', marginBottom: '2px', gap: '4px' }, [
+          { type: 'span', props: { style: { fontSize: '15px', fontWeight: 'bold' }, children: 'Cliente: ' } },
+          { type: 'span', props: { style: { fontSize: '15px' }, children: cli.nombre } }
         ]),
-        R('div', { fontSize:'12px', color:'#888', marginBottom:'16px', fontStyle:'italic' }, `Cuenta #${cuenta.numero}`),
+        { type: 'span', props: { style: { fontSize: '12px', color: '#888', marginBottom: '16px', fontStyle: 'italic' }, children: `Cuenta #${cuenta.numero}` } },
+        // Días
         ...diasNodes,
-        abonosNode,
-        R('div', { background:'#f0f0f0', borderRadius:'8px', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'16px' }, [
-          R('span', { fontSize:'13px', fontWeight:'bold', textTransform:'uppercase', letterSpacing:'0.5px' }, 'SALDO A PAGAR'),
-          R('span', { fontSize:'24px', fontWeight:'bold' }, `S/ ${fmtNum(saldo)}`)
-        ]),
-        R('div', { textAlign:'center', fontSize:'12px', color:'#999', marginTop:'12px', fontStyle:'italic' }, 'Gracias por su preferencia 🙏')
+        // Abonos
+        ...(abonosNode ? [abonosNode] : []),
+        // Total
+        el('div',
+          { flexDirection: 'row', justifyContent: 'space-between', background: '#f0f0f0', borderRadius: '8px', padding: '12px 16px', marginTop: '16px' },
+          [
+            { type: 'span', props: { style: { fontSize: '13px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.5px' }, children: 'SALDO A PAGAR' } },
+            { type: 'span', props: { style: { fontSize: '24px', fontWeight: 'bold' }, children: `S/ ${fmtNum(saldo)}` } }
+          ]
+        ),
+        { type: 'span', props: { style: { textAlign: 'center', fontSize: '12px', color: '#999', marginTop: '12px', fontStyle: 'italic' }, children: 'Gracias por su preferencia' } }
       ].filter(Boolean)
     ),
     { width: 600, height: altura }
@@ -167,7 +208,6 @@ module.exports = async (req, res) => {
     const check = await fetch(publicUrl, { method: 'HEAD' });
 
     if (!check.ok) {
-      // No existe — generar y subir
       await enviar(`Generando recibo de *${cli.nombre}*... un momento ⏳`);
 
       const imgBuffer = await generarImagenRecibo(cli, cuenta, visitas, items, pagos);
