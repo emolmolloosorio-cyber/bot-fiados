@@ -11,9 +11,7 @@ async function sbGet(path) {
   const res = await fetch(`${SB_URL}/rest/v1/${path}`, {
     headers: {
       apikey: SB_KEY,
-      Authorization: `Bearer ${SB_KEY}`,
-      "Range-Unit": "items",
-      Range: "0-9999"
+      Authorization: `Bearer ${SB_KEY}`
     }
   });
 
