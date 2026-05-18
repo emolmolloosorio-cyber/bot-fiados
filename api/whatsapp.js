@@ -25,33 +25,6 @@ const norm     = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLower
 const fmtNum   = n => parseFloat(n || 0).toFixed(2);
 const fmtFecha = iso => iso.split('-').reverse().join('/');
 
-// Helper: nodo simple
-const el = (type, style, children) => ({
-  type,
-  props: {
-    style: { display: 'flex', flexDirection: 'column', ...style },
-    children
-  }
-});
-
-// Fila izquierda-derecha
-const row = (l, r, sL = {}, sR = {}) => ({
-  type: 'div',
-  props: {
-    style: { display: 'flex', flexDirection: 'row', justifyContent: 'space-between', width: '100%' },
-    children: [
-      { type: 'span', props: { style: sL, children: l } },
-      { type: 'span', props: { style: sR, children: r } }
-    ]
-  }
-});
-
-// Separador
-const sep = (style = {}) => ({
-  type: 'div',
-  props: { style: { width: '100%', height: '1px', ...style } }
-});
-
 async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
   const vs = visitas
     .filter(v => v.cuenta_id === cuenta.id)
@@ -72,90 +45,189 @@ async function generarImagenRecibo(cli, cuenta, visitas, items, pagos) {
     lineas += 2;
     vsDelDia.forEach(v => {
       const its = items.filter(it => it.visita_id === v.id);
-      lineas += Math.max(its.length, 1) + (vsDelDia.length > 1 ? 2 : 0);
+      lineas += Math.ceil(Math.max(its.length, 1) / 2) + (vsDelDia.length > 1 ? 2 : 0);
     });
   });
   if (pg.length) lineas += 2 + pg.length;
-  const altura = Math.max(500, lineas * 26 + 100);
+  const altura = Math.max(500, lineas * 30 + 140);
 
-  // Construir nodos de días
+  // Productos en dos columnas como la app
+  const productosEnColumnas = (its) => {
+    if (its.length === 0) return [];
+    const filas = [];
+    for (let i = 0; i < its.length; i += 2) {
+      const izq = its[i];
+      const der = its[i + 1] || null;
+      filas.push({
+        type: 'div',
+        props: {
+          style: { display: 'flex', flexDirection: 'row', width: '100%', borderBottom: '0.5px solid #f0f0f0', padding: '3px 0' },
+          children: [
+            // Columna izquierda
+            {
+              type: 'div',
+              props: {
+                style: { display: 'flex', flexDirection: 'row', justifyContent: 'space-between', width: '50%', paddingRight: '12px' },
+                children: [
+                  { type: 'span', props: { style: { fontSize: '13px', color: '#333', fontFamily: 'Georgia, serif' }, children: izq.producto } },
+                  { type: 'span', props: { style: { fontSize: '13px', fontWeight: '600', color: '#555' }, children: `S/ ${fmtNum(izq.precio)}` } }
+                ]
+              }
+            },
+            // Columna derecha
+            der ? {
+              type: 'div',
+              props: {
+                style: { display: 'flex', flexDirection: 'row', justifyContent: 'space-between', width: '50%', paddingLeft: '12px', borderLeft: '0.5px solid #eee' },
+                children: [
+                  { type: 'span', props: { style: { fontSize: '13px', color: '#333', fontFamily: 'Georgia, serif' }, children: der.producto } },
+                  { type: 'span', props: { style: { fontSize: '13px', fontWeight: '600', color: '#555' }, children: `S/ ${fmtNum(der.precio)}` } }
+                ]
+              }
+            } : { type: 'div', props: { style: { display: 'flex', width: '50%' }, children: '' } }
+          ]
+        }
+      });
+    }
+    return filas;
+  };
+
+  // Nodos de días
   const diasNodes = Object.entries(porFecha).map(([fecha, vsDelDia]) => {
     const totalDia = vsDelDia.reduce((s, v) => s + parseFloat(v.total_visita || 0), 0);
+    const nv = vsDelDia.length;
 
     const visitasNodes = vsDelDia.map((v, idx) => {
       const its = items.filter(it => it.visita_id === v.id);
-      const labelNode = vsDelDia.length > 1
-        ? { type: 'span', props: { style: { fontSize: '10px', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '2px' }, children: `Visita ${idx + 1}` } }
-        : null;
+      const labelNode = nv > 1 ? {
+        type: 'div',
+        props: {
+          style: { display: 'flex', flexDirection: 'row' },
+          children: { type: 'span', props: { style: { fontSize: '10px', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: '3px', marginTop: '4px' }, children: `Visita ${idx + 1}` } }
+        }
+      } : null;
 
-      const productosNodes = its.length > 0
-        ? its.map(it => row(it.producto, `S/ ${fmtNum(it.precio)}`,
-            { fontSize: '12px', color: '#333' },
-            { fontSize: '12px', fontWeight: '600' }
-          ))
-        : [{ type: 'span', props: { style: { fontSize: '12px', color: '#666' }, children: `Total: S/ ${fmtNum(v.total_visita)}` } }];
+      const prodNodes = its.length > 0
+        ? productosEnColumnas(its)
+        : [{
+            type: 'div',
+            props: {
+              style: { display: 'flex', flexDirection: 'row' },
+              children: { type: 'span', props: { style: { fontSize: '13px', color: '#666' }, children: `Total: S/ ${fmtNum(v.total_visita)}` } }
+            }
+          }];
 
-      const subtotalNode = vsDelDia.length > 1
-        ? { type: 'span', props: { style: { fontSize: '11px', color: '#999', textAlign: 'right', marginTop: '2px' }, children: `Subtotal: S/ ${fmtNum(v.total_visita)}` } }
-        : null;
+      const subtotalNode = nv > 1 ? {
+        type: 'div',
+        props: {
+          style: { display: 'flex', flexDirection: 'row', justifyContent: 'flex-end', borderTop: '0.5px dashed #ddd', paddingTop: '3px', marginTop: '2px' },
+          children: { type: 'span', props: { style: { fontSize: '11px', color: '#999' }, children: `subtotal  S/ ${fmtNum(v.total_visita)}` } }
+        }
+      } : null;
 
-      return el('div', { paddingLeft: '8px', marginBottom: '4px', gap: '1px' },
-        [labelNode, ...productosNodes, subtotalNode].filter(Boolean)
-      );
+      return {
+        type: 'div',
+        props: {
+          style: { display: 'flex', flexDirection: 'column', paddingLeft: '10px', marginBottom: '4px' },
+          children: [labelNode, ...prodNodes, subtotalNode].filter(Boolean)
+        }
+      };
     });
 
-    return el('div', { marginBottom: '10px', gap: '0px' }, [
-      row(fmtFecha(fecha), `S/ ${fmtNum(totalDia)}`,
-        { fontSize: '13px', fontWeight: 'bold' },
-        { fontSize: '13px', fontWeight: 'bold' }
-      ),
-      sep({ background: '#333', marginBottom: '5px' }),
-      ...visitasNodes
-    ]);
+    return {
+      type: 'div',
+      props: {
+        style: { display: 'flex', flexDirection: 'column', marginBottom: '12px' },
+        children: [
+          // Header del día
+          {
+            type: 'div',
+            props: {
+              style: { display: 'flex', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', padding: '7px 0 5px', borderBottom: '2px solid #333' },
+              children: [
+                {
+                  type: 'div',
+                  props: {
+                    style: { display: 'flex', flexDirection: 'row', alignItems: 'baseline', gap: '8px' },
+                    children: [
+                      { type: 'span', props: { style: { fontSize: '15px', fontWeight: 'bold' }, children: fmtFecha(fecha) } },
+                      nv > 1 ? { type: 'span', props: { style: { fontSize: '11px', color: '#999', fontStyle: 'italic' }, children: `${nv} visitas` } } : { type: 'span', props: { style: { display: 'none' }, children: '' } }
+                    ]
+                  }
+                },
+                { type: 'span', props: { style: { fontSize: '15px', fontWeight: 'bold' }, children: `S/ ${fmtNum(totalDia)}` } }
+              ]
+            }
+          },
+          ...visitasNodes
+        ]
+      }
+    };
   });
 
-  // Nodo abonos
-  const abonosNode = pg.length > 0
-    ? el('div', { borderTop: '1px dashed #ccc', paddingTop: '8px', marginTop: '4px', gap: '3px' }, [
-        { type: 'span', props: { style: { fontSize: '11px', color: '#999', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '3px' }, children: 'Abonos realizados' } },
-        ...pg.map(p => row(
-          fmtFecha(p.fecha) + (p.nota ? ` (${p.nota})` : ''),
-          `−S/ ${fmtNum(p.monto)}`,
-          { fontSize: '12px' },
-          { fontSize: '12px', color: '#166534', fontWeight: '600' }
-        ))
-      ])
-    : null;
+  // Abonos
+  const abonosNode = pg.length > 0 ? {
+    type: 'div',
+    props: {
+      style: { display: 'flex', flexDirection: 'column', borderTop: '1px dashed #ccc', paddingTop: '10px', marginTop: '6px', gap: '3px' },
+      children: [
+        { type: 'span', props: { style: { fontSize: '11px', color: '#999', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }, children: 'Abonos realizados' } },
+        ...pg.map(p => ({
+          type: 'div',
+          props: {
+            style: { display: 'flex', flexDirection: 'row', justifyContent: 'space-between' },
+            children: [
+              { type: 'span', props: { style: { fontSize: '13px' }, children: fmtFecha(p.fecha) + (p.nota ? ` · ${p.nota}` : '') } },
+              { type: 'span', props: { style: { fontSize: '13px', color: '#166534', fontWeight: '600' }, children: `−S/ ${fmtNum(p.monto)}` } }
+            ]
+          }
+        }))
+      ]
+    }
+  } : null;
 
   const imageResponse = new ImageResponse(
-    el('div',
-      { width: '600px', minHeight: `${altura}px`, background: '#fff', fontFamily: 'Georgia, serif', color: '#1a1a1a', padding: '32px 28px', gap: '0px' },
-      [
-        // Título
-        { type: 'span', props: { style: { fontSize: '18px', fontWeight: 'bold', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '4px' }, children: 'ESTADO DE CUENTA — FIADO' } },
-        sep({ background: '#bbb', borderTop: '2px dashed #bbb', margin: '10px 0 14px' }),
-        // Cliente
-        el('div', { flexDirection: 'row', marginBottom: '2px', gap: '4px' }, [
-          { type: 'span', props: { style: { fontSize: '15px', fontWeight: 'bold' }, children: 'Cliente: ' } },
-          { type: 'span', props: { style: { fontSize: '15px' }, children: cli.nombre } }
-        ]),
-        { type: 'span', props: { style: { fontSize: '12px', color: '#888', marginBottom: '16px', fontStyle: 'italic' }, children: `Cuenta #${cuenta.numero}` } },
-        // Días
-        ...diasNodes,
-        // Abonos
-        ...(abonosNode ? [abonosNode] : []),
-        // Total
-        el('div',
-          { flexDirection: 'row', justifyContent: 'space-between', background: '#f0f0f0', borderRadius: '8px', padding: '12px 16px', marginTop: '16px' },
-          [
-            { type: 'span', props: { style: { fontSize: '13px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.5px' }, children: 'SALDO A PAGAR' } },
-            { type: 'span', props: { style: { fontSize: '24px', fontWeight: 'bold' }, children: `S/ ${fmtNum(saldo)}` } }
-          ]
-        ),
-        { type: 'span', props: { style: { textAlign: 'center', fontSize: '12px', color: '#999', marginTop: '12px', fontStyle: 'italic' }, children: 'Gracias por su preferencia' } }
-      ].filter(Boolean)
-    ),
-    { width: 600, height: altura }
+    {
+      type: 'div',
+      props: {
+        style: { display: 'flex', flexDirection: 'column', width: '700px', minHeight: `${altura}px`, background: '#ffffff', fontFamily: 'Georgia, serif', color: '#1a1a1a', padding: '36px 32px' },
+        children: [
+          // Título
+          { type: 'span', props: { style: { fontSize: '22px', fontWeight: 'bold', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: '6px' }, children: 'ESTADO DE CUENTA — FIADO' } },
+          // Línea punteada
+          { type: 'div', props: { style: { display: 'flex', borderTop: '2px dashed #bbb', marginBottom: '16px', marginTop: '8px' } } },
+          // Cliente
+          {
+            type: 'div',
+            props: {
+              style: { display: 'flex', flexDirection: 'row', gap: '6px', marginBottom: '2px' },
+              children: [
+                { type: 'span', props: { style: { fontSize: '16px', fontWeight: 'bold' }, children: 'Cliente:' } },
+                { type: 'span', props: { style: { fontSize: '16px' }, children: ` ${cli.nombre}.` } }
+              ]
+            }
+          },
+          { type: 'span', props: { style: { fontSize: '12px', color: '#888', fontStyle: 'italic', marginBottom: '20px' }, children: `Cuenta #${cuenta.numero}` } },
+          // Días
+          ...diasNodes,
+          // Abonos
+          ...(abonosNode ? [abonosNode] : []),
+          // Total
+          {
+            type: 'div',
+            props: {
+              style: { display: 'flex', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', background: '#f0f0f0', borderRadius: '10px', padding: '14px 20px', marginTop: '18px' },
+              children: [
+                { type: 'span', props: { style: { fontSize: '14px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.5px' }, children: 'SALDO A PAGAR' } },
+                { type: 'span', props: { style: { fontSize: '28px', fontWeight: 'bold' }, children: `S/ ${fmtNum(saldo)}` } }
+              ]
+            }
+          },
+          { type: 'span', props: { style: { textAlign: 'center', fontSize: '13px', color: '#999', marginTop: '14px', fontStyle: 'italic' }, children: 'Gracias por su preferencia 🙌' } }
+        ].filter(Boolean)
+      }
+    },
+    { width: 700, height: altura }
   );
 
   return imageResponse.arrayBuffer();
@@ -204,7 +276,6 @@ module.exports = async (req, res) => {
     const fileName  = `recibo-cliente-${cli.id}.png`;
     const publicUrl = `${SB_URL}/storage/v1/object/public/Recibos/${fileName}`;
 
-    // Verificar si ya existe imagen
     const check = await fetch(publicUrl, { method: 'HEAD' });
 
     if (!check.ok) {
@@ -224,8 +295,7 @@ module.exports = async (req, res) => {
       });
 
       if (!upload.ok) {
-        const err = await upload.text();
-        console.error('Error subiendo imagen:', err);
+        console.error('Error subiendo imagen:', await upload.text());
         await enviar(`⚠️ No se pudo generar la imagen. Saldo de *${cli.nombre}*: *S/ ${fmtNum(cuenta.saldo)}*`);
         return res.status(200).end();
       }
