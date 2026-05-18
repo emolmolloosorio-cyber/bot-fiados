@@ -2,7 +2,8 @@
   "name": "bot-fiados",
   "version": "1.0.0",
   "dependencies": {
-    "twilio": "^4.23.0"
+    "twilio": "^4.23.0",
+    "@vercel/og": "^0.6.2"
   },
   "engines": {
     "node": "24.x"
