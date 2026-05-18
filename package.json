@@ -3,8 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "twilio": "^4.23.0",
-    "@vercel/og": "^0.6.2"
+    "twilio": "^4.23.0"
   },
   "engines": {
     "node": "20.x"
