@@ -2,8 +2,7 @@
   "name": "bot-fiados",
   "version": "1.0.0",
   "dependencies": {
-    "twilio": "^4.23.0",
-    "canvas": "^2.11.2"
+    "twilio": "^4.23.0"
   },
   "engines": {
     "node": "24.x"
