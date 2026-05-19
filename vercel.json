@@ -1,9 +1,3 @@
 {
-  "version": 2,
-  "crons": [
-    {
-      "path": "/api/whatsapp",
-      "schedule": "*/5 * * * *"
-    }
-  ]
+  "version": 2
 }
