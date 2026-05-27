@@ -1,5 +1,6 @@
 // api/whatsapp.js - Bot WhatsApp Fiados
 import sharp from "sharp";
+import TextToSVG from "text-to-svg";
 import twilio from "twilio";
 
 const ACCOUNT_SID = process.env.TWILIO_SID;
@@ -8,6 +9,7 @@ const FROM_NUMBER = process.env.TWILIO_FROM;
 const SB_URL      = process.env.SB_URL;
 const SB_KEY      = process.env.SB_KEY;
 const RECEIPTS_BUCKET = "Recibos";
+const textToSvg = TextToSVG.loadSync();
 
 async function sbGet(path) {
   const res = await fetch(`${SB_URL}/rest/v1/${path}`, {
@@ -136,21 +138,25 @@ function receiptSvg(cli, cuenta, data) {
   }
 
   let y = 92;
-  const text = (x, yPos, value, size, weight = 400, fill = "#1f1f1f", anchor = "start", family = "Georgia, 'Times New Roman', serif", style = "") => {
-    body.push(`<text x="${x}" y="${yPos}" font-family="${family}" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}" ${style}>${escapeXml(value)}</text>`);
+  const textWidth = (value, size) => textToSvg.getMetrics(String(value ?? ""), { fontSize: size }).width;
+  const text = (x, yPos, value, size, weight = 400, fill = "#1f1f1f", anchor = "start") => {
+    const clean = String(value ?? "");
+    const metrics = textToSvg.getMetrics(clean, { fontSize: size });
+    const px = anchor === "end" ? x - metrics.width : anchor === "middle" ? x - metrics.width / 2 : x;
+    const stroke = weight >= 800 ? 0.65 : weight >= 700 ? 0.35 : 0;
+    const path = textToSvg.getPath(clean, { x: px, y: yPos, fontSize: size });
+    body.push(path.replace("<path ", `<path fill="${fill}" stroke="${fill}" stroke-width="${stroke}" `));
   };
   const line = (yPos, color = "#d8d8d8", stroke = 1.5, dash = "", x1 = margin, x2 = right) => {
     body.push(`<line x1="${x1}" y1="${yPos}" x2="${x2}" y2="${yPos}" stroke="${color}" stroke-width="${stroke}" ${dash}/>`); 
   };
-  const sans = "Arial, Helvetica, sans-serif";
-  const serif = "Georgia, 'Times New Roman', serif";
-
-  text(margin, y, "ESTADO DE CUENTA \u2014 FIADO", 38, 800, "#1f1f1f", "start", serif, 'letter-spacing="2"');
+  text(margin, y, "ESTADO DE CUENTA \u2014 FIADO", 38, 800);
   y += 30;
   line(y, "#b8b8b8", 3, 'stroke-dasharray="12 10"');
   y += 58;
 
-  body.push(`<text x="${margin}" y="${y}" font-family="${serif}" font-size="30" font-weight="800" fill="#1f1f1f">Cliente: <tspan font-weight="400">${escapeXml(cli.nombre)}.</tspan></text>`);
+  text(margin, y, "Cliente:", 30, 800);
+  text(margin + textWidth("Cliente: ", 30), y, `${cli.nombre}.`, 30, 400);
   y += 58;
 
   if (!visitasPorFecha.size) {
@@ -160,8 +166,8 @@ function receiptSvg(cli, cuenta, data) {
 
   for (const [fecha, visitas] of visitasPorFecha.entries()) {
     const totalDia = visitas.reduce((s, v) => s + parseFloat(v.total_visita || 0), 0);
-    text(margin, y, fechaDisplay(fecha), 27, 800, "#1f1f1f", "start", sans);
-    text(right, y, fmt(totalDia), 27, 800, "#1f1f1f", "end", sans);
+    text(margin, y, fechaDisplay(fecha), 27, 800);
+    text(right, y, fmt(totalDia), 27, 800, "#1f1f1f", "end");
     y += 17;
     line(y, "#2a2a2a", 2);
     y += 37;
@@ -170,7 +176,8 @@ function receiptSvg(cli, cuenta, data) {
       const its = data.items.filter(it => it.visita_id === visita.id);
 
       if (visitas.length > 1) {
-        text(margin + 20, y - 8, `Visita ${index + 1}`, 16, 700, "#aaa", "start", sans, 'letter-spacing="1"');
+        text(margin + 20, y - 10, `VISITA ${index + 1}`, 16, 700, "#aaa");
+        y += 20;
       }
 
       for (let i = 0; i < its.length; i += 2) {
@@ -179,12 +186,12 @@ function receiptSvg(cli, cuenta, data) {
         const rowY = y;
 
         text(margin + 20, rowY, short(first.producto, 20), 25, 400, "#333");
-        text(mid - 2, rowY, fmt(first.precio), 22, 800, "#666", "end", sans);
+        text(mid - 2, rowY, fmt(first.precio), 22, 800, "#666", "end");
         line(rowY + 17, "#eeeeee", 1, "", margin + 20, mid - 2);
 
         if (second) {
           text(mid + 18, rowY, short(second.producto, 20), 25, 400, "#333");
-          text(right, rowY, fmt(second.precio), 22, 800, "#666", "end", sans);
+          text(right, rowY, fmt(second.precio), 22, 800, "#666", "end");
           line(rowY + 17, "#eeeeee", 1, "", mid + 18, right);
         }
 
@@ -192,7 +199,7 @@ function receiptSvg(cli, cuenta, data) {
       }
 
       if (visitas.length > 1) {
-        text(right, y + 4, `subtotal ${fmt(visita.total_visita)}`, 17, 700, "#777", "end", sans);
+        text(right, y + 4, `subtotal ${fmt(visita.total_visita)}`, 17, 700, "#777", "end");
         y += 24;
       }
     });
@@ -205,13 +212,13 @@ function receiptSvg(cli, cuenta, data) {
     y += 2;
     line(y, "#cccccc", 1.5, 'stroke-dasharray="8 8"');
     y += 34;
-    text(margin, y, "ABONOS REALIZADOS", 17, 700, "#999", "start", sans, 'letter-spacing="1"');
+    text(margin, y, "ABONOS REALIZADOS", 17, 700, "#999");
     y += 28;
 
     for (const pago of data.pagos) {
       const nota = pago.nota ? ` (${short(pago.nota, 18)})` : "";
       text(margin, y, `${fechaDisplay(pago.fecha)}${nota}`, 20, 400, "#333");
-      text(right, y, `- ${fmt(pago.monto)}`, 20, 700, "#166534", "end", sans);
+      text(right, y, `- ${fmt(pago.monto)}`, 20, 700, "#166534", "end");
       y += 28;
     }
     y += 18;
@@ -219,9 +226,9 @@ function receiptSvg(cli, cuenta, data) {
 
   body.push(`<rect x="${margin}" y="${y}" width="${width - margin * 2}" height="90" rx="12" fill="#eeeeee"/>`);
   text(margin + 28, y + 58, "SALDO A PAGAR", 27, 800, "#1f1f1f");
-  text(right - 28, y + 64, fmt(cuenta.saldo), 45, 900, "#171717", "end", sans);
+  text(right - 28, y + 64, fmt(cuenta.saldo), 45, 900, "#171717", "end");
   y += 142;
-  text(mid, y, "Gracias por su preferencia", 26, 400, "#999", "middle", serif, 'font-style="italic"');
+  text(mid, y, "Gracias por su preferencia", 26, 400, "#999", "middle");
 
   const height = Math.ceil(y + 54);
   return [
