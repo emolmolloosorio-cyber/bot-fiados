@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
+    "sharp": "^0.33.5",
     "twilio": "^4.23.0"
   },
   "engines": {

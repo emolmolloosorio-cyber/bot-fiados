@@ -1,4 +1,5 @@
-// api/whatsapp.js — Bot WhatsApp Fiados
+// api/whatsapp.js - Bot WhatsApp Fiados
+import sharp from "sharp";
 import twilio from "twilio";
 
 const ACCOUNT_SID = process.env.TWILIO_SID;
@@ -6,6 +7,7 @@ const AUTH_TOKEN  = process.env.TWILIO_TOKEN;
 const FROM_NUMBER = process.env.TWILIO_FROM;
 const SB_URL      = process.env.SB_URL;
 const SB_KEY      = process.env.SB_KEY;
+const RECEIPTS_BUCKET = "Recibos";
 
 async function sbGet(path) {
   const res = await fetch(`${SB_URL}/rest/v1/${path}`, {
@@ -28,6 +30,20 @@ async function sbUpsert(table, data) {
       Prefer: "resolution=merge-duplicates"
     },
     body: JSON.stringify(data)
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+async function uploadReceipt(fileName, pngBuffer) {
+  const res = await fetch(`${SB_URL}/storage/v1/object/${RECEIPTS_BUCKET}/${fileName}`, {
+    method: "PUT",
+    headers: {
+      apikey: SB_KEY,
+      Authorization: `Bearer ${SB_KEY}`,
+      "Content-Type": "image/png",
+      "x-upsert": "true"
+    },
+    body: pngBuffer
   });
   if (!res.ok) throw new Error(await res.text());
 }
@@ -68,8 +84,177 @@ async function clearSesion(telefono) {
   );
 }
 
-const norm   = s => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+const norm = s => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 const fmtNum = n => parseFloat(n || 0).toFixed(2);
+const fmt = n => `S/ ${fmtNum(n)}`;
+const escapeXml = s => String(s ?? "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#39;");
+const short = (s, max = 34) => {
+  const text = String(s ?? "");
+  return text.length > max ? `${text.slice(0, max - 1)}...` : text;
+};
+const fechaDisplay = iso => {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return y && m && d ? `${d}/${m}/${y}` : iso;
+};
+
+async function getCuentaActiva(cli) {
+  const cuentas = await sbGet(`cuentas?cliente_id=eq.${cli.id}&order=numero`);
+  return cuentas.find(c => c.estado === "activa" || c.estado === "pendiente") || null;
+}
+
+async function getReceiptData(cuenta) {
+  const [visitas, pagos] = await Promise.all([
+    sbGet(`visitas?cuenta_id=eq.${cuenta.id}&order=fecha,created_at`),
+    sbGet(`pagos?cuenta_id=eq.${cuenta.id}&order=fecha`)
+  ]);
+
+  const visitaIds = visitas.map(v => v.id);
+  const items = visitaIds.length
+    ? await sbGet(`items_visita?visita_id=in.(${visitaIds.join(",")})&order=id`)
+    : [];
+
+  return { visitas, items, pagos };
+}
+
+function receiptSvg(cli, cuenta, data) {
+  const width = 896;
+  const margin = 48;
+  const right = width - margin;
+  const mid = width / 2;
+  const body = [];
+
+  const visitasPorFecha = new Map();
+  for (const visita of data.visitas) {
+    if (!visitasPorFecha.has(visita.fecha)) visitasPorFecha.set(visita.fecha, []);
+    visitasPorFecha.get(visita.fecha).push(visita);
+  }
+
+  let y = 92;
+  const text = (x, yPos, value, size, weight = 400, fill = "#1f1f1f", anchor = "start", family = "Georgia, 'Times New Roman', serif", style = "") => {
+    body.push(`<text x="${x}" y="${yPos}" font-family="${family}" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}" ${style}>${escapeXml(value)}</text>`);
+  };
+  const line = (yPos, color = "#d8d8d8", stroke = 1.5, dash = "", x1 = margin, x2 = right) => {
+    body.push(`<line x1="${x1}" y1="${yPos}" x2="${x2}" y2="${yPos}" stroke="${color}" stroke-width="${stroke}" ${dash}/>`); 
+  };
+  const sans = "Arial, Helvetica, sans-serif";
+  const serif = "Georgia, 'Times New Roman', serif";
+
+  text(margin, y, "ESTADO DE CUENTA \u2014 FIADO", 38, 800, "#1f1f1f", "start", serif, 'letter-spacing="2"');
+  y += 30;
+  line(y, "#b8b8b8", 3, 'stroke-dasharray="12 10"');
+  y += 58;
+
+  body.push(`<text x="${margin}" y="${y}" font-family="${serif}" font-size="30" font-weight="800" fill="#1f1f1f">Cliente: <tspan font-weight="400">${escapeXml(cli.nombre)}.</tspan></text>`);
+  y += 58;
+
+  if (!visitasPorFecha.size) {
+    text(margin, y, "Sin movimientos registrados.", 24, 400, "#666");
+    y += 50;
+  }
+
+  for (const [fecha, visitas] of visitasPorFecha.entries()) {
+    const totalDia = visitas.reduce((s, v) => s + parseFloat(v.total_visita || 0), 0);
+    text(margin, y, fechaDisplay(fecha), 27, 800, "#1f1f1f", "start", sans);
+    text(right, y, fmt(totalDia), 27, 800, "#1f1f1f", "end", sans);
+    y += 17;
+    line(y, "#2a2a2a", 2);
+    y += 37;
+
+    visitas.forEach((visita, index) => {
+      const its = data.items.filter(it => it.visita_id === visita.id);
+
+      if (visitas.length > 1) {
+        text(margin + 20, y - 8, `Visita ${index + 1}`, 16, 700, "#aaa", "start", sans, 'letter-spacing="1"');
+      }
+
+      for (let i = 0; i < its.length; i += 2) {
+        const first = its[i];
+        const second = its[i + 1];
+        const rowY = y;
+
+        text(margin + 20, rowY, short(first.producto, 20), 25, 400, "#333");
+        text(mid - 2, rowY, fmt(first.precio), 22, 800, "#666", "end", sans);
+        line(rowY + 17, "#eeeeee", 1, "", margin + 20, mid - 2);
+
+        if (second) {
+          text(mid + 18, rowY, short(second.producto, 20), 25, 400, "#333");
+          text(right, rowY, fmt(second.precio), 22, 800, "#666", "end", sans);
+          line(rowY + 17, "#eeeeee", 1, "", mid + 18, right);
+        }
+
+        y += 31;
+      }
+
+      if (visitas.length > 1) {
+        text(right, y + 4, `subtotal ${fmt(visita.total_visita)}`, 17, 700, "#777", "end", sans);
+        y += 24;
+      }
+    });
+
+    line(y + 2, "#d8d8d8", 1.5);
+    y += 47;
+  }
+
+  if (data.pagos.length) {
+    y += 2;
+    line(y, "#cccccc", 1.5, 'stroke-dasharray="8 8"');
+    y += 34;
+    text(margin, y, "ABONOS REALIZADOS", 17, 700, "#999", "start", sans, 'letter-spacing="1"');
+    y += 28;
+
+    for (const pago of data.pagos) {
+      const nota = pago.nota ? ` (${short(pago.nota, 18)})` : "";
+      text(margin, y, `${fechaDisplay(pago.fecha)}${nota}`, 20, 400, "#333");
+      text(right, y, `- ${fmt(pago.monto)}`, 20, 700, "#166534", "end", sans);
+      y += 28;
+    }
+    y += 18;
+  }
+
+  body.push(`<rect x="${margin}" y="${y}" width="${width - margin * 2}" height="90" rx="12" fill="#eeeeee"/>`);
+  text(margin + 28, y + 58, "SALDO A PAGAR", 27, 800, "#1f1f1f");
+  text(right - 28, y + 64, fmt(cuenta.saldo), 45, 900, "#171717", "end", sans);
+  y += 142;
+  text(mid, y, "Gracias por su preferencia", 26, 400, "#999", "middle", serif, 'font-style="italic"');
+
+  const height = Math.ceil(y + 54);
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+    `<rect width="100%" height="100%" fill="#ffffff"/>`,
+    ...body,
+    "</svg>"
+  ].join("");
+}
+
+async function crearReciboImagen(cli, cuenta) {
+  const data = await getReceiptData(cuenta);
+  const svg = receiptSvg(cli, cuenta, data);
+  const png = await sharp(Buffer.from(svg)).png().toBuffer();
+  const fileName = `recibo-cliente-${cli.id}.png`;
+  await uploadReceipt(fileName, png);
+  return `${SB_URL}/storage/v1/object/public/${RECEIPTS_BUCKET}/${fileName}?v=${Date.now()}`;
+}
+
+async function enviarRecibo(cli, enviar) {
+  const cuenta = await getCuentaActiva(cli);
+
+  if (!cuenta) {
+    await enviar(`${cli.nombre} no tiene fiado activo actualmente.`);
+    return;
+  }
+
+  const mediaUrl = await crearReciboImagen(cli, cuenta);
+  await enviar(
+    `Estado de cuenta de *${cli.nombre}*\nSaldo pendiente: *S/ ${fmtNum(cuenta.saldo)}*`,
+    mediaUrl
+  );
+}
 
 export default async function handler(req, res) {
   // Cron keep-alive ping
@@ -91,122 +276,52 @@ export default async function handler(req, res) {
   };
 
   try {
-    // Cargar sesión activa del usuario
     const sesion = await getSesion(from);
 
-    // ── ESTADO: esperando que elija un número de la lista ──
     if (sesion && sesion.estado === "eligiendo") {
-      const opcion = parseInt(msg);
+      const opcion = parseInt(msg, 10);
       const candidatos = sesion.datos.candidatos;
 
       if (isNaN(opcion) || opcion < 1 || opcion > candidatos.length) {
         await enviar(
-          `Responde con un número del 1 al ${candidatos.length}, o escribe otro nombre para buscar de nuevo.`
+          `Responde con un numero del 1 al ${candidatos.length}, o escribe otro nombre para buscar de nuevo.`
         );
         return res.status(200).end();
       }
-
-      const cli = candidatos[opcion - 1];
-
-      // Cargar cuentas solo para este cliente
-      const cuentas = await sbGet(
-        `cuentas?cliente_id=eq.${cli.id}&order=numero`
-      );
-
-      const cuenta = cuentas.find(c =>
-        c.estado === "activa" || c.estado === "pendiente"
-      );
 
       await clearSesion(from);
-
-      if (!cuenta) {
-        await enviar(`${cli.nombre} no tiene fiado activo actualmente.`);
-        return res.status(200).end();
-      }
-
-      const fileName  = `recibo-cliente-${cli.id}.png`;
-      const publicUrl = `${SB_URL}/storage/v1/object/public/Recibos/${fileName}`;
-      const check     = await fetch(publicUrl, { method: "HEAD" });
-
-      if (!check.ok) {
-        await enviar(
-          `El recibo de *${cli.nombre}* aún no ha sido generado.\n` +
-          `Abre la app, busca al cliente y toca "🧾 Recibo". Luego vuelve a escribir aquí.`
-        );
-        return res.status(200).end();
-      }
-
-      await enviar(
-        `Estado de cuenta de *${cli.nombre}*\nSaldo pendiente: *S/ ${fmtNum(cuenta.saldo)}*`,
-        publicUrl
-      );
-
+      await enviarRecibo(candidatos[opcion - 1], enviar);
       return res.status(200).end();
     }
 
-    // ── BÚSQUEDA NORMAL ──
     const clientes = await sbGet("clientes?estado=eq.activo&order=nombre");
-
     const candidatos = clientes.filter(c =>
       norm(c.nombre).includes(msg) || msg.includes(norm(c.nombre))
     );
 
-    // Sin resultados
     if (candidatos.length === 0) {
       await enviar(
-        `No encontré ningún cliente con "${msgRaw}".\nVerifica el nombre e intenta de nuevo.`
+        `No encontre ningun cliente con "${msgRaw}".\nVerifica el nombre e intenta de nuevo.`
       );
       return res.status(200).end();
     }
 
-    // Múltiples coincidencias → pedir que elija
     if (candidatos.length > 1) {
       const lista = candidatos
         .map((c, i) => `${i + 1}. ${c.nombre}`)
         .join("\n");
 
       await setSesion(from, "eligiendo", { candidatos });
-      await enviar(`Encontré ${candidatos.length} clientes:\n${lista}\n\nResponde con el número.`);
+      await enviar(`Encontre ${candidatos.length} clientes:\n${lista}\n\nResponde con el numero.`);
       return res.status(200).end();
     }
 
-    // Una sola coincidencia → directo
-    const cli = candidatos[0];
-    const cuentas = await sbGet(
-      `cuentas?cliente_id=eq.${cli.id}&order=numero`
-    );
-
-    const cuenta = cuentas.find(c =>
-      c.estado === "activa" || c.estado === "pendiente"
-    );
-
-    if (!cuenta) {
-      await enviar(`${cli.nombre} no tiene fiado activo actualmente.`);
-      return res.status(200).end();
-    }
-
-    const fileName  = `recibo-cliente-${cli.id}.png`;
-    const publicUrl = `${SB_URL}/storage/v1/object/public/Recibos/${fileName}`;
-    const check     = await fetch(publicUrl, { method: "HEAD" });
-
-    if (!check.ok) {
-      await enviar(
-        `El recibo de *${cli.nombre}* aún no ha sido generado.\n` +
-        `Abre la app, busca al cliente y toca "🧾 Recibo". Luego vuelve a escribir aquí.`
-      );
-      return res.status(200).end();
-    }
-
-    await enviar(
-      `Estado de cuenta de *${cli.nombre}*\nSaldo pendiente: *S/ ${fmtNum(cuenta.saldo)}*`,
-      publicUrl
-    );
-
+    await enviarRecibo(candidatos[0], enviar);
     return res.status(200).end();
 
   } catch (e) {
     console.error("Error bot:", e.message);
-    await enviar("Ocurrió un error. Intenta de nuevo.").catch(() => {});
+    await enviar("Ocurrio un error. Intenta de nuevo.").catch(() => {});
     return res.status(200).end();
   }
 }
