@@ -60,21 +60,31 @@ async function getSesion(telefono) {
       }
     }
   );
+  if (!res.ok) {
+    console.warn("Sesion bot no disponible:", await res.text());
+    return null;
+  }
   const rows = await res.json();
   return rows[0] || null;
 }
 
 async function setSesion(telefono, estado, datos = {}) {
-  await sbUpsert("sesiones_bot", {
-    telefono,
-    estado,
-    datos,
-    updated_at: new Date().toISOString()
-  });
+  try {
+    await sbUpsert("sesiones_bot", {
+      telefono,
+      estado,
+      datos,
+      updated_at: new Date().toISOString()
+    });
+    return true;
+  } catch (e) {
+    console.warn("No se pudo guardar sesion bot:", e.message);
+    return false;
+  }
 }
 
 async function clearSesion(telefono) {
-  await fetch(
+  const res = await fetch(
     `${SB_URL}/rest/v1/sesiones_bot?telefono=eq.${encodeURIComponent(telefono)}`,
     {
       method: "DELETE",
@@ -84,6 +94,7 @@ async function clearSesion(telefono) {
       }
     }
   );
+  if (!res.ok) console.warn("No se pudo limpiar sesion bot:", await res.text());
 }
 
 const norm = s => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
@@ -329,8 +340,12 @@ export default async function handler(req, res) {
         .map((c, i) => `${i + 1}. ${c.nombre}`)
         .join("\n");
 
-      await setSesion(from, "eligiendo", { candidatos });
-      await enviar(`Encontre ${candidatos.length} clientes:\n${lista}\n\nResponde con el numero.`);
+      const sesionGuardada = await setSesion(from, "eligiendo", { candidatos });
+      await enviar(
+        sesionGuardada
+          ? `Encontre ${candidatos.length} clientes:\n${lista}\n\nResponde con el numero.`
+          : `Encontre ${candidatos.length} clientes:\n${lista}\n\nEscribe el nombre mas completo para evitar confusiones.`
+      );
       return res.status(200).end();
     }
 
