@@ -86,7 +86,8 @@ async function clearSesion(telefono) {
   );
 }
 
-const norm = s => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+const norm = s => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+const compactNorm = s => norm(s).replace(/[^a-z0-9]/g, "");
 const fmtNum = n => parseFloat(n || 0).toFixed(2);
 const fmt = n => `S/ ${fmtNum(n)}`;
 const escapeXml = s => String(s ?? "")
@@ -138,9 +139,13 @@ function receiptSvg(cli, cuenta, data) {
   }
 
   let y = 92;
-  const textWidth = (value, size) => textToSvg.getMetrics(String(value ?? ""), { fontSize: size }).width;
+  const safeText = value => String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x20-\x7E]/g, "");
+  const textWidth = (value, size) => textToSvg.getMetrics(safeText(value), { fontSize: size }).width;
   const text = (x, yPos, value, size, weight = 400, fill = "#1f1f1f", anchor = "start") => {
-    const clean = String(value ?? "");
+    const clean = safeText(value);
     const metrics = textToSvg.getMetrics(clean, { fontSize: size });
     const px = anchor === "end" ? x - metrics.width : anchor === "middle" ? x - metrics.width / 2 : x;
     const stroke = weight >= 800 ? 0.65 : weight >= 700 ? 0.35 : 0;
@@ -150,7 +155,7 @@ function receiptSvg(cli, cuenta, data) {
   const line = (yPos, color = "#d8d8d8", stroke = 1.5, dash = "", x1 = margin, x2 = right) => {
     body.push(`<line x1="${x1}" y1="${yPos}" x2="${x2}" y2="${yPos}" stroke="${color}" stroke-width="${stroke}" ${dash}/>`); 
   };
-  text(margin, y, "ESTADO DE CUENTA \u2014 FIADO", 38, 800);
+  text(margin, y, "ESTADO DE CUENTA - FIADO", 38, 800);
   y += 30;
   line(y, "#b8b8b8", 3, 'stroke-dasharray="12 10"');
   y += 58;
@@ -302,9 +307,15 @@ export default async function handler(req, res) {
     }
 
     const clientes = await sbGet("clientes?estado=eq.activo&order=nombre");
-    const candidatos = clientes.filter(c =>
-      norm(c.nombre).includes(msg) || msg.includes(norm(c.nombre))
-    );
+    const msgCompact = compactNorm(msgRaw);
+    const candidatos = clientes.filter(c => {
+      const nombre = norm(c.nombre);
+      const nombreCompact = compactNorm(c.nombre);
+      return nombre.includes(msg) ||
+        msg.includes(nombre) ||
+        nombreCompact.includes(msgCompact) ||
+        msgCompact.includes(nombreCompact);
+    });
 
     if (candidatos.length === 0) {
       await enviar(
@@ -328,7 +339,8 @@ export default async function handler(req, res) {
 
   } catch (e) {
     console.error("Error bot:", e.message);
-    await enviar("Ocurrio un error. Intenta de nuevo.").catch(() => {});
+    const publicMsg = String(e.message || "").slice(0, 140);
+    await enviar(`Ocurrio un error generando el recibo. Detalle: ${publicMsg}`).catch(() => {});
     return res.status(200).end();
   }
 }
